@@ -1,4 +1,4 @@
-### Example 1
+few_shot_prompt = ### Example 1
     #### Brand Recognition Analysis:
     - The page claims to be from "Amazon," but the logo is pixelated and differs from Amazon's official branding.
     - The URL ("amaz0n-deals.com") contains a typo in the brand name.
