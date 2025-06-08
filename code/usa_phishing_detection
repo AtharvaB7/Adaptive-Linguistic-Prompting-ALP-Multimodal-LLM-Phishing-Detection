@@ -1,0 +1,406 @@
+# Preliminary Results:
+prelim_results = """
+---MAIN Test--- 
+Eval 3 Results with Few shot (10-shot) chain-of-thought prompting: 600 URLs (289 Phishing 311 Benign)
+
+Model: gpt-4o-mini-2024-07-18
+
+Accuracy: 91.33%
+
+Predicted Benign: 313
+
+Predicted Phishing: 287
+
+Actual Benign: 311
+
+Actual Phishing: 289
+
+Correctly Predicted Phishing: 262/289 (90.66%)
+
+Correctly Predicted Benign: 286/311 (91.96%)
+
+*Precision (Overall with Macro Averaging): 0.9133
+
+*Recall (Overall with Macro Averaging): 0.9131
+
+*F1 Score (Overall with Macro Averaging): 0.9132
+
+**Precision (Overall without Macro Averaging): 0.9129
+
+**Recall (Overall without Macro Averaging): 0.9066
+
+**F1 Score (Overall without Macro Averaging): 0.9097
+
+True Positives: 262
+
+False Positives: 25
+
+False Negatives: 27
+
+True Negatives: 286
+
+*When we compute precision, recall, and F1 score for the entire dataset (considering both classes), we use macro averaging. This averages the scores for both classes (Phishing and Benign) equally, without considering the class imbalance.
+
+**Regular whole dataset metrics, use for paper
+
+First test run (Huggingface + OpenPhish Sampled URLs):
+1000 links (500 Benign, 500 Phishing) (1/12/25)
+
+Eval 3 Results with Few shot (10-shot) chain-of-thought prompting:
+
+Model: gpt-4o-mini-2024-07-18
+
+Correctly Predicted: 972 out of 1000 total links
+
+Predicted Benign: 490
+
+Predicted Phishing: 510
+
+Actual Benign: 500
+
+Actual Phishing: 500
+
+Model Accuracy: 97.20%
+
+2nd Results: (1/20/25)
+Eval 3 Results with Few shot (10-shot) chain-of-thought prompting:
+
+Model: gpt-4o-2024-08-06
+
+Correctly Predicted: out of total links
+
+Predicted Benign: 848
+
+Predicted Phishing: 243
+
+Actual Benign: 811
+
+Actual Phishing: 289
+
+Model Accuracy: ?
+
+3rd Test: (1/23/25)
+Eval 3 Results with Few shot (10-shot) chain-of-thought prompting:
+
+Model: gpt-4o-2024-08-06
+
+Correctly Predicted: 981 out of 1100 total links
+
+Predicted Benign: 881
+
+Predicted Phishing: 219
+
+Actual Benign: 811
+
+Actual Phishing: 289
+
+Model Accuracy: 89.18%
+"""
+
+!pip install openai==0.28
+!pip install datasets
+
+import requests
+import random
+import pandas as pd
+import openai
+import time
+import torch
+from torch.utils.data import DataLoader
+from sklearn.model_selection import train_test_split
+
+
+import torch
+phishing_file = "phishing_urls_github.txt"
+benign_file = "benign_urls_github.txt"
+benign_debug_file = "benign_urls_github_debug.txt"
+phishing_debug_file = "phishing_urls_github_debug.txt"
+
+all_urls_ordered = []
+all_urls_ordered_debug = []
+
+with open(phishing_file, 'r') as phishing_urls:
+    for line in phishing_urls:
+        url = line.strip()
+        if url:
+            all_urls_ordered.append({'text': [url], 'label': torch.tensor([1])})
+with open(benign_file, 'r') as benign_urls:
+    for line in benign_urls:
+        url = line.strip()
+        if url:
+            all_urls_ordered.append({'text': [url], 'label': torch.tensor([0])})
+with open(phishing_debug_file, 'r') as phishing_urls_debug:
+    for line in phishing_urls_debug:
+        url = line.strip()
+        if url:
+            all_urls_ordered_debug.append({'text': [url], 'label': torch.tensor([1])})
+with open(benign_debug_file, 'r') as benign_urls_debug:
+    for line in benign_urls_debug:
+        url = line.strip()
+        if url:
+            all_urls_ordered_debug.append({'text': [url], 'label': torch.tensor([0])})
+
+output_file = "combined_urls_data.txt"
+output_file_debug = "combined_urls_data_debug.txt"
+with open(output_file, "w") as f:
+    for entry in all_urls_ordered:
+        f.write(f"{entry}\n")
+with open(output_file_debug, "w") as f:
+    for entry in all_urls_ordered_debug:
+        f.write(f"{entry}\n")
+
+import csv
+"""
+
+
+import csv
+import random
+import openai
+
+
+
+# Reduce the list to 1,000 links (500 phishing, 500 benign)
+size_per_label=500
+phishing_links = phishing_urls_formatted
+benign_links = [item for item in combined_dataset_urls if item["label"].item() == 0]
+
+
+selected_benign = random.sample(benign_links, size_per_label)
+
+# Combine selected links and keep original order
+new_combined_1K_list = phishing_links + selected_benign
+random.shuffle(new_combined_1K_list)
+
+"""
+
+
+
+# Extract only links from the reduced list for processing through GPT
+def extract_links_only(data_list):
+    return [item["text"][0] for item in data_list]
+
+all_urls_without_tensors_into_model = extract_links_only(all_urls_ordered)
+all_urls_without_tensors_into_model_debug = extract_links_only(all_urls_ordered_debug)
+
+
+
+def classify_link(link):
+    few_shot_prompt = [
+    {"role": "system", "content": """
+    You are a phishing detection expert. Your task is to classify URLs as only either 'phishing' or 'benign' and provide a detailed explanation of why. Focus on key features like domain name, protocol, URL path, and potential phishing indicators.
+
+
+
+
+
+    Here are examples of how to analyze URLs, follow these exact templates.
+
+    Your response should follow this order:
+    Link:
+    Features:
+    Reasoning:
+    Label: (Benign or Phishing)
+
+
+    Example 1:
+    Link: 'http://university-scholarship-app.us/confirm-details'
+    Features: The domain includes terms such as "university" and "scholarship", HTTP protocol, path "confirm-details”.
+    Reasoning: This link exhibits several traits of a phishing attempt. The domain uses generic terms like "university" and "scholarship," which are unrelated to any well-known institution, making it highly suspicious. The use of HTTP instead of HTTPS suggests that the site does not encrypt user data, leaving it vulnerable to interception. The path, "confirm-details," is a classic phishing tactic designed to solicit sensitive personal or account-related information under the guise of legitimacy. These factors combined strongly indicate malicious intent.
+    Label: Phishing
+
+    Example 2
+    Link: 'https://mybank.com/dashboard'
+    Features: The official domain, "mybank.com," uses HTTPS, and the path, "dashboard”.
+    Reasoning: This link demonstrates clear signs of being legitimate. The domain name, "mybank.com," is specific and matches the branding of an established banking institution. The presence of HTTPS indicates that the connection is encrypted, ensuring that sensitive information entered by the user is securely transmitted. The path, "dashboard," aligns with standard navigation structures for online banking platforms, providing users with access to account overviews. These combined features establish this as a secure and trustworthy link.
+    Label: Benign
+
+    Example 3
+    Link: 'http://paypal-secure-login.com/verify'
+    Features: The domain terms like "paypal" and "secure”. The URL uses HTTP. The path, "verify”.
+    Reasoning: This URL displays several red flags indicative of phishing. The domain includes "paypal" and "secure," which are meant to create a false sense of legitimacy, but the overall domain name is not owned by PayPal. The protocol is HTTP, which does not provide encryption, leaving user data exposed to potential interception. The path, "verify," is a common phishing strategy used to create urgency and manipulate users into providing sensitive information like login credentials. The combination of an unofficial domain, lack of HTTPS, and a path requesting sensitive actions strongly suggests this is a phishing site.
+    Label: Phishing
+
+    Example 4
+    Link: 'https://accounts.google.com/o/oauth2/auth'
+    Features: The domain, "google.com”. The protocol is HTTPS. The path is "/o/oauth2/auth”.
+    Reasoning: This URL is clearly legitimate and secure. The domain, "google.com," is an official and well-known domain owned by Google. The protocol is HTTPS, ensuring that any communication between the user and the server is encrypted and protected from interception. The path, "/o/oauth2/auth," aligns with Google’s standard authentication flows for account login and authorization, which is consistent with legitimate Google services. The alignment of the domain, protocol, and path strongly supports the conclusion that this is a legitimate link.
+    Label: Benign
+
+    Example 5
+    Link: 'https://facebok-login-verification.com/reset'
+    Features: The domain includes a misspelling ("facebok") that mimics Facebook. The protocol is HTTPS. The path, "reset".
+    Reasoning: This link is a clear phishing attempt. The domain contains a deliberate misspelling of "facebook" as "facebok," which is a tactic commonly used to deceive users who may not notice the typo. While the URL uses HTTPS, which provides encryption, phishing sites often use HTTPS to create a false sense of security. The path, "reset," suggests a password reset action, which is a sensitive activity commonly exploited by phishing schemes to steal credentials. The misspelled domain and deceptive path are strong indicators of phishing.
+    Label: Phishing
+
+    Example 6
+    Link: 'http://securebanking-info.ru/login'
+    Features: The domain, "securebanking-info.ru," uses ".ru" TLD. The URL uses HTTP, and the path "login".
+    Reasoning: This URL has several characteristics that point to phishing. The ".ru" TLD, associated with Russia, is unusual for most global banking services, raising suspicion. Furthermore, most of the Phishing attempts in the world come from the country of Russia. The domain itself, "securebanking-info," is generic and not tied to any recognizable financial institution. The use of HTTP instead of HTTPS means there is no encryption, leaving user data vulnerable to theft. The path, "login," is a direct target for stealing user credentials, which is a hallmark of phishing sites. The combination of an unusual TLD, lack of encryption, and login-targeting path makes this a highly suspicious link.
+    Label: Phishing
+
+    Example 7
+    Link: 'https://accounts.shutterstock.com/login?next=%2Foauth%2Fauthorize%3Fstate%3D306e92367f3b2056c410a9d743d2993a%26redirect_uri%3Dhttps%253A%252F%252Fwww.shutterstock.com%252Fnext-oauth%252Fcallback%253Flanding_page%253Dhttps%25253A%25252F%25252Fwww.shutterstock.com%25252Flogin%25253Fsite%25253Dimage%2526realm%253Dcustomer%26scope%3Dlicenses.create%2520licenses.view%2520organization.view%2520purchases.view%2520purchases.create%2520user.edit%2520user.email%2520user.view%2520user.address%2520organization.address%2520collections.view%2520collections.edit%2520media.upload%2520media.submit%2520media.edit%26site%3Dimage%26client_id%3Da0b76-a7f5e-fedec-bbebe-fa65b-85719'
+    Features: The domain, "shutterstock.com”. The use of HTTPS. The path includes “login”.
+    Reasoning: This link appears legitimate because the domain is "shutterstock.com," the official website of Shutterstock. The protocol is HTTPS, ensuring a secure connection. Additionally, the path and query parameters are consistent with standard OAuth and login-related operations, indicating no signs of phishing or malicious behavior. Even though the link is suspiciously long, judging whether it is phishing or not shouldn’t be based solely on URL length.
+    Label: Benign
+
+    Example 8
+    Link: 'http://apple-verify-support.com/account-access'
+    Features: The domain, "apple-verify-support.com”. The URL uses HTTP. The path, "account-access".
+    Reasoning: This URL raises multiple concerns. The domain, "apple-verify-support," includes misleading terms like "verify" and "support," which are not part of Apple's official domain structure. The protocol is HTTP, meaning there is no encryption, leaving any data entered vulnerable to interception. The path, "account-access," suggests a sensitive activity related to account credentials, which is a common phishing tactic. These factors, particularly the unofficial domain and sensitive path, strongly indicate phishing.
+    Label: Phishing
+
+    Example 9
+    Link: 'https://www.microsoft.com/en-us/software-download/windows10'
+    Features: The domain, "microsoft.com" owned by Microsoft. The protocol is HTTPS. The path, "/en-us/software-download/windows10".
+    Reasoning: This URL is legitimate and secure. The domain, "microsoft.com," is official and belongs to Microsoft, a widely recognized and trusted organization. The use of HTTPS ensures that any communication is encrypted and secure. The path, "/en-us/software-download/windows10," is consistent with Microsoft's official software distribution practices. These features indicate that the link is authentic and safe to use.
+    Label: Benign
+
+    Example 10
+    Link: 'http://micro-soft-login.com/recover-password'
+    Features: The domain, "micro-soft-login.com,” the protocol is HTTP. The path, "recover-password".
+    Reasoning: This link is a clear phishing attempt. The domain, "micro-soft-login," uses a hyphen to mimic "Microsoft" but is clearly unofficial. The protocol is HTTP, meaning there is no encryption to secure user data. The path, "recover-password," suggests a sensitive activity that phishing sites often exploit to steal credentials. The unofficial domain, lack of encryption, and deceptive path make this a highly suspicious link.
+    Label: Phishing
+
+
+
+
+
+
+    """},
+    {"role": "user", "content": f"""
+    Limit Features to 100 characters or less
+    Limit Reasoning to 500 characters or less
+
+    **If you are unsure and feel that a link is suspicious of phishing activity, label it phishing**
+    **Otherwise if the link relates to an official domain label it Benign**
+
+    Now analyze the link below
+
+
+    Example 11:
+    Link: '{link}'
+    """}
+]
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-4o-2024-08-06",
+            messages=few_shot_prompt,
+            max_tokens=300,
+            temperature=0.5
+        )
+        return response['choices'][0]['message']['content'].strip()
+    except Exception as e:
+        return f"Error: {e}"
+
+# Process all links and save to CSV
+output_csv = "600_with_prompt.csv"
+tries = 0
+# Open the output CSV file
+with open(output_csv, mode="w", newline="", encoding="utf-8") as file:
+    # Initialize the CSV writer and write the header
+    writer = csv.writer(file)
+    writer.writerow(["Link", "Label", "Features", "Reasoning"])
+
+    # Iterate through the links and classify them
+    for link in all_urls_without_tensors_into_model:
+        result = classify_link(link)
+        # Check for "Link:", "Features:", "Reasoning:", and "Label:" in the response
+
+        if all(keyword in result for keyword in ["Link:", "Reasoning:", "Label:"]):  # "Features:" is optional
+            tries = 0
+            try:
+                # Extract the relevant parts of the result using string manipulation
+                link_start = result.find("Link:") + len("Link:")
+                link_end = result.find("Features:") if "Features:" in result else result.find("Reasoning:")
+                features_start = result.find("Features:") + len("Features:") if "Features:" in result else None
+                features_end = result.find("Reasoning:") if "Features:" in result else None
+                reasoning_start = result.find("Reasoning:") + len("Reasoning:")
+                label_start = result.find("Label:") + len("Label:")
+
+                # Slice out each component and strip whitespace
+                extracted_link = result[link_start:link_end].strip()
+                if features_start and features_end:  # Only extract features if present
+                    features = result[features_start:features_end].strip()
+                else:
+                    features = "N/A"  # Default value if Features section is missing
+                reasoning = result[reasoning_start:label_start].strip()
+                label = result[label_start:].strip()
+                if reasoning.endswith("Label:"):
+                    reasoning = reasoning[:-len("Label:")].strip()
+
+                # Write the extracted data into the CSV
+                writer.writerow([extracted_link, label, features, reasoning])
+            except Exception as e:
+                # Handle unexpected format issues
+                writer.writerow([link, "Error", "Error", f"Parsing error: {str(e)}"])
+        else:
+            # Handle cases where the expected format is not found
+            writer.writerow([link, "Error", "Error", "Response format not as expected"])
+            with open("error_results.txt", "a") as f:
+                f.write(result + "\n")
+
+
+
+import pandas as pd
+from sklearn.metrics import precision_score, recall_score, f1_score
+
+df = pd.read_csv('Eval_3_Final_Results_600_1-25.csv')
+
+accuracy = (df['Predicted_Label'] == df['Actual_Label']).mean()
+
+
+predicted_benign = (df['Predicted_Label'] == 'Benign').sum()
+predicted_phishing = (df['Predicted_Label'] == 'Phishing').sum()
+
+actual_benign = (df['Actual_Label'] == 'Benign').sum()
+actual_phishing = (df['Actual_Label'] == 'Phishing').sum()
+
+
+correct_phishing = ((df['Predicted_Label'] == 'Phishing') & (df['Actual_Label'] == 'Phishing')).sum()
+correct_benign = ((df['Predicted_Label'] == 'Benign') & (df['Actual_Label'] == 'Benign')).sum()
+
+
+precision_all = precision_score(df['Actual_Label'], df['Predicted_Label'], average='macro')
+recall_all = recall_score(df['Actual_Label'], df['Predicted_Label'], average='macro')
+f1_all = f1_score(df['Actual_Label'], df['Predicted_Label'], average='macro')
+
+
+tp = ((df['Predicted_Label'] == 'Phishing') & (df['Actual_Label'] == 'Phishing')).sum()
+fp = ((df['Predicted_Label'] == 'Phishing') & (df['Actual_Label'] == 'Benign')).sum()
+fn = ((df['Predicted_Label'] == 'Benign') & (df['Actual_Label'] == 'Phishing')).sum()
+tn = ((df['Predicted_Label'] == 'Benign') & (df['Actual_Label'] == 'Benign')).sum()
+
+
+precision_all_without = (tp/(tp+fp))
+recall_all_without = (tp/(tp+fn))
+f1_all_without = 2 * ((precision_all_without * recall_all_without) / (precision_all_without+recall_all_without))
+
+
+
+
+print(f"Accuracy: {accuracy * 100:.2f}%")
+print(f"Predicted Benign: {predicted_benign}")
+print(f"Predicted Phishing: {predicted_phishing}")
+print(f"Actual Benign: {actual_benign}")
+print(f"Actual Phishing: {actual_phishing}")
+print(f"Correctly Predicted Phishing: {correct_phishing}/{actual_phishing} ({(correct_phishing/actual_phishing)*100:.2f}%)")
+print(f"Correctly Predicted Benign: {correct_benign}/{actual_benign} ({(correct_benign/actual_benign)*100:.2f}%)")
+print(f"\n*Precision (Overall with Macro Averaging): {precision_all:.4f}")
+print(f"*Recall (Overall with Macro Averaging): {recall_all:.4f}")
+print(f"*F1 Score (Overall with Macro Averaging): {f1_all:.4f}")
+print(f"\nPrecision (Overall without Macro Averaging): {precision_all_without:.4f}")
+print(f"Recall (Overall withput Macro Averaging): {recall_all_without:.4f}")
+print(f"F1 Score (Overall without Macro Averaging): {f1_all_without:.4f}")
+print(f"\nTrue Positives: {tp}")
+print(f"False Positives: {fp}")
+print(f"False Negatives: {fn}")
+print(f"True Negatives: {tn}")
+
+print("\n*When we compute precision, recall, and F1 score for the entire dataset (considering both classes), we use macro averaging.\n This averages the scores for both classes (Phishing and Benign) equally, without considering the class imbalance.")
+
+
+
+
+
+
