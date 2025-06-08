@@ -1,0 +1,398 @@
+!pip install openai==0.28
+!pip install datasets
+!pip install requests
+!pip install requests beautifulsoup4 selenium
+!pip install pandas pillow tqdm
+
+import requests
+import pandas as pd
+import openai
+import time
+import torch
+import os
+import random
+from datasets import Dataset, load_dataset
+from torch.utils.data import DataLoader
+from bs4 import BeautifulSoup
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.common.by import By
+from selenium.webdriver.chrome.options import Options
+import base64
+from PIL import Image
+from tqdm import tqdm
+
+
+train_dataset_url_classification = load_dataset("imanoop7/phishing_url_classification",split = "train")
+
+debug_dataset_url_classification = train_dataset_url_classification.select(range(0, 500))
+
+
+train_dataloader_url_classification = DataLoader(train_dataset_url_classification, batch_size=1, shuffle=False)
+
+debug_dataloader_url_classification = DataLoader(debug_dataset_url_classification, batch_size=1, shuffle=False)
+
+
+# Function to fetch OpenPhish data
+def fetch_openphish_data(url):
+    try:
+        response = requests.get(url)
+        response.raise_for_status()  # Check for HTTP errors
+        return response.text.splitlines()  # Split content into lines
+    except requests.exceptions.RequestException as e:
+        print(f"Error fetching data: {e}")
+        return []
+
+
+openphish_url = "https://openphish.com/feed.txt"
+
+# Fetch phishing URLs
+phishing_urls = fetch_openphish_data(openphish_url)
+
+
+if phishing_urls:
+    print(f"Fetched {len(phishing_urls)} phishing URLs!")
+    print("URLs:")
+
+    #for url in phishing_urls:
+        #print(url)
+
+else:
+    print("No data fetched.")
+
+print(phishing_urls)
+
+# Create combined dataset
+combined_dataset_urls = []
+
+# Add dataset1 to the combined dataset (already labeled)
+combined_dataset_urls.extend(debug_dataloader_url_classification)
+
+# Add dataset2 with label tensor([1]) for phishing URLs
+for url in phishing_urls:
+    combined_dataset_urls.append({'text': [url], 'label': torch.tensor([1])})
+
+# Print combined dataset
+for entry in combined_dataset_urls:
+    print(entry)
+
+
+
+
+#webcrawler
+from base64 import b64decode
+
+def fetch_web_content(url):
+  api_response = requests.post(
+    "https://api.zyte.com/v1/extract",
+    auth=("2de56bab9bb3470187ca158825f3ca28", ""),
+    json={
+        "url": url,
+        "browserHtml": True,
+        "screenshot": True,
+    },
+  )
+  if api_response.status_code == 200:
+      browser_html = api_response.json().get("browserHtml", "")
+      screenshot = b64decode(api_response.json().get("screenshot", ""))
+      return browser_html, screenshot
+  else:
+      raise Exception(f"Failed to fetch content for {url}. Status code: {api_response.status_code}")
+
+
+
+
+#COMBINED
+
+
+from google.colab import userdata
+
+openai.api_key = userdata.get('API_Key')
+# Define the function
+def analyze_phishing_with_cot(dataset):
+  # Select a random URL from the dataset
+    random_entry = random.choice(dataset)
+    random_url = random_entry['text'][0]  # Extract the URL from the entry
+
+    # Fetch the HTML content and screenshot for the URL
+    try:
+        html_content, screenshot = fetch_web_content(random_url)
+    except Exception as e:
+        print(f"Error fetching content: {e}")
+        return
+
+# Convert screenshot to a base64 string (for prompt embedding)
+    screenshot_base64 = b64decode(screenshot).decode("latin1")
+
+    # Few-shot examples
+    few_shot_prompt = """
+    ### Example 1
+    #### Brand Recognition Analysis:
+    - The page claims to be from "Amazon," but the logo is pixelated and differs from Amazon's official branding.
+    - The URL ("amaz0n-deals.com") contains a typo in the brand name.
+    - No HTTPS protocol, which is uncharacteristic of Amazon.
+
+    #### Diction and Syntax Analysis:
+    HTML Content:
+    <html>
+      <body>
+        <h1>CONGRATULATIONS!</h1>
+        <p>You have been SELECTED for an exclusive reward. Claim NOW by clicking <a href='phishing-link'>here</a>.</p>
+      </body>
+    </html>
+    - **Analysis**:
+      1. **Excessive Capitalization**: "CONGRATULATIONS!" and "SELECTED" use unnecessary capitalization to draw attention.
+      2. **Urgent Tone**: Words like "NOW" and "exclusive reward" create a false sense of urgency.
+      3. **Suspicious Hyperlink**: The anchor tag's `href` points to an ambiguous "phishing-link," which isn't related to Amazon.
+
+    #### Screenshot Analysis:
+    - The screenshot shows a generic page layout with no Amazon branding or typical design elements.
+    - The "Claim Now" button is styled in bright red, inconsistent with Amazon's usual colors.
+
+    #### Step-by-Step Reasoning:
+    1. The brand logo is inconsistent and poorly designed.
+    2. HTML content includes urgent and overly excited diction with capitalization.
+    3. The visual design lacks Amazon's distinctive elements, making the page highly suspicious.
+
+    #### Classification: High Phishing Risk
+
+    ### Example 2
+    #### Brand Recognition Analysis:
+    - The page claims to be from "PayPal" but lacks the PayPal logo.
+    - The URL ("p@y-pal-secure.com") uses obfuscated characters to mimic the brand.
+
+    #### Diction and Syntax Analysis:
+    HTML Content:
+    <html>
+      <body>
+        <h2>Important Notice</h2>
+        <p>Your account has been locked due to suspicious activity. Please <a href='verify-login'>log in</a> to resolve this.</p>
+      </body>
+    </html>
+    - **Analysis**:
+      1. **Polite but Generic Language**: The message lacks personal details like the user's name.
+      2. **Vague Threat**: "Suspicious activity" isn't specified, leaving ambiguity.
+      3. **Suspicious Link**: The `verify-login` URL isn't a recognized PayPal domain.
+
+    #### Screenshot Analysis:
+    - The screenshot shows a warning icon with "PayPal Secure" in a large font.
+    - The page is missing PayPal's standard navigation bar and footer.
+
+    #### Step-by-Step Reasoning:
+    1. The URL uses obfuscation to mimic PayPal, which is a strong phishing indicator.
+    2. HTML includes vague threats and lacks personalization, reducing legitimacy.
+    3. The visual design is inconsistent with PayPal’s authentic website.
+
+    #### Classification: Medium Phishing Risk
+    """
+
+    # Current input data
+    dynamic_prompt = f"""
+    ### Current Input
+    #### URL: {random_url}
+    #### HTML Content:
+    {html_content}
+    #### Screenshot (Base64-encoded):
+    {screenshot_base64}
+    """
+
+    # Final Prompt
+    full_prompt = f"""
+    You are a phishing detection assistant. From a dataset of phishing and non-phishing urls, I will randomly select one and give you HTML and Screenshot data from it. Use the examples below as guides on how to analyze the input data and determine the phishing risk. Split your analysis into brand recognition analysis, diction and syntax analysis, and screenshot specific analysis.
+
+    #### Brand Recognition Analysis:
+
+    {few_shot_prompt}
+
+    {dynamic_prompt}
+
+    #### Response Format:
+    1. **Step-by-Step Reasoning**: [Explain the analysis step-by-step]
+    2. **Phishing Risk (High/Medium/Low)**: [Provide the final classification]
+    3. **Key Indicators**: [List diction/syntax observations]
+    4. **Confidence Score**: [0.00 to 10.00 scale]
+    5. **Supporting Evidence**: [Explanation within 300 words]
+    6. **URL: [Provide the URL]
+    """
+
+    # Send the request to the OpenAI API
+    response = openai.ChatCompletion.create(
+        model="gpt-4o-mini-2024-07-18",
+        messages=[{"role": "user", "content": full_prompt}],
+        max_tokens=1000,
+        temperature=0.2
+    )
+
+    # Extract and return the content from the response
+    return response['choices'][0]['message']['content']
+
+# Run the function and test with the dataset
+output = analyze_phishing_with_cot(combined_dataset_urls)
+print(output)
+
+
+
+from google.colab import drive
+
+# Mount Google Drive
+drive.mount('/content/drive')
+
+
+# Copy the folder to Colab
+!cp -r /content/drive/MyDrive/BaslineDataSets/PhishingDataSet /content
+
+import os
+import json
+import base64
+from google.colab import drive
+import openai
+
+from google.colab import userdata
+
+openai.api_key = userdata.get('API_Key')
+
+# Define the function
+def analyze_phishing_with_cot(html_content, screenshot_base64, random_url):
+    # Few-shot examples
+    few_shot_prompt = """
+    ### Example 1
+    #### Brand Recognition Analysis:
+    - The page claims to be from "Amazon," but the logo is pixelated and differs from Amazon's official branding.
+    - The URL ("amaz0n-deals.com") contains a typo in the brand name.
+    - No HTTPS protocol, which is uncharacteristic of Amazon.
+
+    #### Diction and Syntax Analysis:
+    HTML Content:
+    <html>
+      <body>
+        <h1>CONGRATULATIONS!</h1>
+        <p>You have been SELECTED for an exclusive reward. Claim NOW by clicking <a href='phishing-link'>here</a>.</p>
+      </body>
+    </html>
+    - **Analysis**:
+      1. **Excessive Capitalization**: "CONGRATULATIONS!" and "SELECTED" use unnecessary capitalization to draw attention.
+      2. **Urgent Tone**: Words like "NOW" and "exclusive reward" create a false sense of urgency.
+      3. **Suspicious Hyperlink**: The anchor tag's `href` points to an ambiguous "phishing-link," which isn't related to Amazon.
+
+    #### Screenshot Analysis:
+    - The screenshot shows a generic page layout with no Amazon branding or typical design elements.
+    - The "Claim Now" button is styled in bright red, inconsistent with Amazon's usual colors.
+
+    #### Step-by-Step Reasoning:
+    1. The brand logo is inconsistent and poorly designed.
+    2. HTML content includes urgent and overly excited diction with capitalization.
+    3. The visual design lacks Amazon's distinctive elements, making the page highly suspicious.
+
+    #### Classification: High Phishing Risk
+
+    ### Example 2
+    #### Brand Recognition Analysis:
+    - The page claims to be from "PayPal" but lacks the PayPal logo.
+    - The URL ("p@y-pal-secure.com") uses obfuscated characters to mimic the brand.
+
+    #### Diction and Syntax Analysis:
+    HTML Content:
+    <html>
+      <body>
+        <h2>Important Notice</h2>
+        <p>Your account has been locked due to suspicious activity. Please <a href='verify-login'>log in</a> to resolve this.</p>
+      </body>
+    </html>
+    - **Analysis**:
+      1. **Polite but Generic Language**: The message lacks personal details like the user's name.
+      2. **Vague Threat**: "Suspicious activity" isn't specified, leaving ambiguity.
+      3. **Suspicious Link**: The `verify-login` URL isn't a recognized PayPal domain.
+
+    #### Screenshot Analysis:
+    - The screenshot shows a warning icon with "PayPal Secure" in a large font.
+    - The page is missing PayPal's standard navigation bar and footer.
+
+    #### Step-by-Step Reasoning:
+    1. The URL uses obfuscation to mimic PayPal, which is a strong phishing indicator.
+    2. HTML includes vague threats and lacks personalization, reducing legitimacy.
+    3. The visual design is inconsistent with PayPal’s authentic website.
+
+    #### Classification: Medium Phishing Risk
+    """
+
+    # Current input data
+    dynamic_prompt = f"""
+    ### Current Input
+    #### URL: {random_url}
+    #### HTML Content:
+    {html_content}
+    #### Screenshot (Base64-encoded):
+    {screenshot_base64}
+    """
+
+    # Final Prompt
+    full_prompt = f"""
+    You are a phishing detection assistant. From a dataset of phishing and non-phishing urls, I will randomly select one and give you HTML and Screenshot data from it. Use the examples below as guides on how to analyze the input data and determine the phishing risk. Split your analysis into brand recognition analysis, diction and syntax analysis, and screenshot specific analysis.
+
+    #### Brand Recognition Analysis:
+
+    {few_shot_prompt}
+
+    {dynamic_prompt}
+
+    #### Response Format:
+    1. **Step-by-Step Reasoning**: [Explain the analysis step-by-step]
+    2. **Phishing Risk (High/Medium/Low)**: [Provide the final classification]
+    3. **Key Indicators**: [List diction/syntax observations]
+    4. **Confidence Score**: [0.00 to 10.00 scale]
+    5. **Supporting Evidence**: [Explanation within 300 words]
+    6. **URL: [Provide the URL]
+    """
+
+    # Send the request to the OpenAI API
+    response = openai.ChatCompletion.create(
+        model="gpt-4o-mini-2024-07-18",
+        messages=[{"role": "user", "content": full_prompt}],
+        max_tokens=1000,
+        temperature=0.2
+    )
+
+    # Extract and return the content from the response
+    return response['choices'][0]['message']['content']
+
+# Path to the PhishingDataSet folder
+phishing_dataset_path = '/content/drive/MyDrive/BaslineDataSets/PhishingDataSet'
+
+# Initialize a list to store results
+results = []
+
+# Traverse through each folder in PhishingDataSet
+for folder_name in os.listdir(phishing_dataset_path):
+    folder_path = os.path.join(phishing_dataset_path, folder_name)
+
+    # Check if it's a directory
+    if os.path.isdir(folder_path):
+        html_content = ""
+        screenshot_base64 = ""
+        random_url = folder_name  # Assuming folder name is the URL
+
+        # Extract HTML content from .json file
+        for file_name in os.listdir(folder_path):
+            if file_name.endswith('.json'):
+                with open(os.path.join(folder_path, file_name), 'r') as f:
+                    html_content = json.load(f)
+
+        # Extract screenshot and convert to base64
+        for file_name in os.listdir(folder_path):
+            if file_name.endswith('.png'):
+                with open(os.path.join(folder_path, file_name), 'rb') as f:
+                    screenshot_base64 = base64.b64encode(f.read()).decode('utf-8')
+
+        # Analyze the data
+        if html_content and screenshot_base64:
+            analysis_result = analyze_phishing_with_cot(html_content, screenshot_base64, random_url)
+            results.append(analysis_result)
+
+# Save results to a file
+with open('/content/drive/MyDrive/PhishingResults.txt', 'w') as f:
+    for result in results:
+        f.write(result + '\n\n')
+
+print("Analysis complete. Results saved to PhishingResults.txt.")
+
+
