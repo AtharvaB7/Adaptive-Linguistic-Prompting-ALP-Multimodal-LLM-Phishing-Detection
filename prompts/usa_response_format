@@ -1,0 +1,13 @@
+{"role": "user", "content": f"""
+    Limit Features to 100 characters or less
+    Limit Reasoning to 500 characters or less
+
+    **If you are unsure and feel that a link is suspicious of phishing activity, label it phishing**
+    **Otherwise if the link relates to an official domain label it Benign**
+
+    Now analyze the link below
+
+
+    Example 11:
+    Link: '{link}'
+    """}
