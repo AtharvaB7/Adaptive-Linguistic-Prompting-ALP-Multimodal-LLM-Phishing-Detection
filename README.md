@@ -10,3 +10,7 @@ This project uses a curated dataset originally created by [Jehyun Lee et al., 20
 # Ethical Statement: 
 This work is done for research purposes and for the general advancement of the use of LLMs in the space of cybersecurity and phishing detection. The few-shot prompts and the original dataset should NOT be used for any unethical or illegal purposes.
 
+# Research Paper:
+- The paper: [Adaptive Linguistic Prompting (ALP) Enhances Phishing Webpage Detection in Multimodal Large Language Models](https://openreview.net/pdf?id=bg8P97Zn5v)
+- Accepted to NLP4PI @ ACL 2025
+- Bhargude, A., Gonehal, I., Yoon, D., (2025, May)
